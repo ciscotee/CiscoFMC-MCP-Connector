@@ -106,59 +106,50 @@ class FMCClient:
         path: str,
         *,
         params: Optional[Dict[str, Any]] = None,
+        json_body: Optional[Dict[str, Any]] = None,
         ignore_statuses: Optional[Set[int]] = None,
     ) -> Dict[str, Any]:
         await self._ensure_authenticated()
         if not self._access_token:
-            raise FMCAuthError("No access token, authentication failed")
+            raise RuntimeError("No access token available")
 
-        url = f"{self._settings.base_url}{path}"
+        base = self._settings.base_url.rstrip("/")
+
+        # ✅ Fully-qualified URL
+        if path.startswith("http://") or path.startswith("https://"):
+            url = path
+        else:
+            p = path.lstrip("/")
+
+            # ✅ Explicit API paths (platform or config)
+            if p.startswith("api/"):
+                url = f"{base}/{p}"
+            else:
+                # ✅ Relative config paths (auto-prefix domain URL)
+                domain_uuid = await self.ensure_domain_uuid()
+                url = f"{base}/api/fmc_config/v1/domain/{domain_uuid}/{p}"
+
         headers = {
-            "Content-Type": "application/json",
             "X-auth-access-token": self._access_token,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
         }
 
-        try:
-            async with httpx.AsyncClient(
-                verify=self._settings.verify_ssl, timeout=self._settings.timeout
-            ) as client:
-                response = await client.request(
-                    method=method, url=url, headers=headers, params=params
-                )
-        except httpx.RequestError as exc:
-            raise FMCRequestError(f"FMC {method} {url} failed: {exc}") from exc
+        async with httpx.AsyncClient(verify=self._settings.verify_ssl, timeout=self._settings.timeout) as client:
+            resp = await client.request(method, url, headers=headers, params=params, json=json_body)
 
-        if response.status_code == 401:
-            # refresh once
-            self._access_token = None
-            await self._ensure_authenticated()
-            headers["X-auth-access-token"] = self._access_token or ""
-            try:
-                async with httpx.AsyncClient(
-                    verify=self._settings.verify_ssl, timeout=self._settings.timeout
-                ) as client:
-                    response = await client.request(
-                        method=method, url=url, headers=headers, params=params
-                    )
-            except httpx.RequestError as exc:
-                raise FMCRequestError(
-                    f"FMC {method} {url} failed after token refresh: {exc}"
-                ) from exc
+            # refresh token on 401
+            if resp.status_code == 401:
+                await self._authenticate()
+                headers["X-auth-access-token"] = self._access_token or ""
+                resp = await client.request(method, url, headers=headers, params=params, json=json_body)
 
-        if ignore_statuses and response.status_code in ignore_statuses:
-            return {"items": [], "paging": {}}
+        if ignore_statuses and resp.status_code in ignore_statuses:
+            return {}
 
-        if response.status_code < 200 or response.status_code >= 300:
-            raise FMCRequestError(
-                f"FMC {method} {url} failed with status {response.status_code}: {response.text}"
-            )
+        resp.raise_for_status()
+        return resp.json() if resp.text else {}
 
-        try:
-            return response.json()
-        except json.JSONDecodeError as exc:
-            raise FMCRequestError(
-                f"FMC {method} {url} returned invalid JSON: {exc}"
-            ) from exc
 
     @staticmethod
     def _next_offset_from_paging(paging: Dict[str, Any], current_offset: int, limit: int) -> Optional[int]:
@@ -187,13 +178,14 @@ class FMCClient:
         limit: int = 1000,
         hard_page_limit: int = 20,
         expanded: bool = False,
+        start_offset: int = 0,
         ignore_statuses: Optional[Set[int]] = None,
     ) -> List[Dict[str, Any]]:
         domain_uuid = await self.ensure_domain_uuid()
         path = f"/api/fmc_config/v1/domain/{domain_uuid}{path_suffix}"
 
         all_items: List[Dict[str, Any]] = []
-        offset = 0
+        offset = max(0, start_offset)
         page_count = 0
 
         base_params = params.copy() if params else {}
@@ -245,15 +237,106 @@ class FMCClient:
         return all_items
 
     # Devices / assignments
-    async def list_device_records(self) -> List[Dict[str, Any]]:
-        return await self._list_paginated("/devices/devicerecords", expanded=True, hard_page_limit=5)
+    async def list_device_records(
+        self,
+        *,
+        limit: int = 1000,
+        hard_page_limit: int = 5,
+        expanded: bool = True,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        return await self._list_paginated(
+            "/devices/devicerecords",
+            limit=limit,
+            hard_page_limit=hard_page_limit,
+            expanded=expanded,
+            start_offset=offset,
+        )
 
-    async def list_device_ha_pairs(self) -> List[Dict[str, Any]]:
-        return await self._list_paginated("/devices/ftddevicehapairs", expanded=True, hard_page_limit=5)
+    async def list_device_ha_pairs(
+        self,
+        *,
+        limit: int = 1000,
+        hard_page_limit: int = 5,
+        expanded: bool = True,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """
+        FTD HA pairs endpoint differs by FMC version.
+        Correct/documented path is under /devicehapairs/ftddevicehapairs.
+        Some environments may not support it; treat 404 as empty list.
+        """
+        # Preferred / documented
+        try:
+            return await self._list_paginated(
+                "/devicehapairs/ftddevicehapairs",
+                limit=limit,
+                expanded=expanded,
+                hard_page_limit=hard_page_limit,
+                start_offset=offset,
+                ignore_statuses={404},
+            )
+        except Exception:
+            # Fallback (older/alternate path used by some code samples)
+            return await self._list_paginated(
+                "/devices/ftddevicehapairs",
+                limit=limit,
+                expanded=expanded,
+                hard_page_limit=hard_page_limit,
+                start_offset=offset,
+                ignore_statuses={404},
+            )
 
-    async def list_device_clusters(self) -> List[Dict[str, Any]]:
-        return await self._list_paginated("/devices/ftddeviceclusters", expanded=True, hard_page_limit=5)
+    async def list_device_clusters(
+        self,
+        *,
+        limit: int = 1000,
+        hard_page_limit: int = 5,
+        expanded: bool = True,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """
+        FTD clusters endpoint differs by FMC version.
+        Documented path is /deviceclusters/ftddevicecluster/.
+        Treat 404 as empty list.
+        """
+        # Preferred / documented
+        try:
+            return await self._list_paginated(
+                "/deviceclusters/ftddevicecluster",
+                limit=limit,
+                expanded=expanded,
+                hard_page_limit=hard_page_limit,
+                start_offset=offset,
+                ignore_statuses={404},
+            )
+        except Exception:
+            # Fallback (if your FMC uses a different plural form)
+            return await self._list_paginated(
+                "/devices/ftddeviceclusters",
+                limit=limit,
+                expanded=expanded,
+                hard_page_limit=hard_page_limit,
+                start_offset=offset,
+                ignore_statuses={404},
+            )
 
+    # ---------------------------------------------------------------------
+    # Backward-compatible aliases (resolver expects these names)
+    # ---------------------------------------------------------------------
+    async def list_devices(self, limit: int = 1000, expanded: bool = True, offset: int = 0):
+        """Alias for list_device_records()."""
+        return await self.list_device_records(limit=limit, expanded=expanded, offset=offset)
+
+    async def list_ha_pairs(self, limit: int = 1000, expanded: bool = True, offset: int = 0):
+        """Alias for list_device_ha_pairs()."""
+        return await self.list_device_ha_pairs(limit=limit, expanded=expanded, offset=offset)
+
+    async def list_clusters(self, limit: int = 1000, expanded: bool = True, offset: int = 0):
+        """Alias for list_device_clusters()."""
+        return await self.list_device_clusters(limit=limit, expanded=expanded, offset=offset)
+
+    # ---------------------------
     async def list_policy_assignments(self) -> List[Dict[str, Any]]:
         return await self._list_paginated("/assignment/policyassignments", expanded=True, hard_page_limit=5)
 
@@ -264,6 +347,14 @@ class FMCClient:
         return await self._list_paginated(
             "/policy/accesspolicies", limit=limit, hard_page_limit=hard_page_limit, expanded=expanded
         )
+
+    async def get_access_policy(self, policy_id: str, *, expanded: bool = True) -> Dict[str, Any]:
+        params = {"expanded": "true"} if expanded else None
+        return await self._request_json("GET", f"/policy/accesspolicies/{policy_id}", params=params)
+
+    async def get_device_record(self, device_id: str, *, expanded: bool = True) -> Dict[str, Any]:
+        params = {"expanded": "true"} if expanded else None
+        return await self._request_json("GET", f"/devices/devicerecords/{device_id}", params=params)
 
     async def list_access_rules(
         self, access_policy_id: str, *, limit: int = 1000, hard_page_limit: int = 10, expanded: bool = True

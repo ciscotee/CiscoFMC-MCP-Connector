@@ -103,15 +103,23 @@ async def search_access_rules_impl(
     filtered_policies: List[Dict[str, Any]] = all_policies
 
     if policy_id:
-        pid = policy_id.strip()
-        filtered_policies = [p for p in filtered_policies if (p.get("id") or "").strip() == pid]
+        # FMC IDs can appear with different casing depending on which endpoint returned them
+        # (policy assignments sometimes return lowercase ids).
+        # Treat policy_id matching as case-insensitive.
+        pid = policy_id.strip().lower()
+        filtered_policies = [
+            p
+            for p in filtered_policies
+            if (p.get("id") or "").strip().lower() == pid
+        ]
         if not filtered_policies:
             return {
                 "error": {
-                    "category": "RESOLUTION",
+                    "category": "NOT_FOUND",
                     "message": f"No policy with id '{policy_id}' was found for rule_set='{rule_set}'.",
                 }
             }
+
     elif policy_name:
         name_norm = _norm(policy_name)
         filtered_policies = [p for p in filtered_policies if _norm(p.get("name")) == name_norm]
