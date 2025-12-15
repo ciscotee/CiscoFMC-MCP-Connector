@@ -67,6 +67,7 @@ async def search_access_rules_impl(
     rule_name_contains: Optional[str] = None,
     max_results: int = 100,
     domain_uuid: Optional[str] = None,
+    client: Optional[FMCClient] = None,
 ) -> Dict[str, Any]:
     if max_results < 1:
         max_results = 1
@@ -92,11 +93,13 @@ async def search_access_rules_impl(
             }
         }
 
-    settings = FMCSettings.from_env()
-    if domain_uuid:
-        settings.domain_uuid = domain_uuid
-
-    client = FMCClient(settings)
+    if client is None:
+        settings = FMCSettings.from_env()
+        if domain_uuid:
+            settings.domain_uuid = domain_uuid
+        client = FMCClient(settings)
+    else:
+        settings = client.settings
 
     if indicator_type not in VALID_INDICATOR_TYPES:
         return {

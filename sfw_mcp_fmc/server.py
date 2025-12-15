@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from typing import Any, Dict, Literal, Optional
 
 from fastmcp import FastMCP
@@ -10,6 +11,7 @@ from .config import FMCSettings
 from .errors import InvalidIndicatorError
 from .fmc.client import FMCClient
 from .logging_conf import configure_logging
+from .profile_registry import FMCProfileRegistry
 from .tools.find_rules import search_rules_in_policy
 from .tools.search_access import search_access_rules_impl
 from .tools.target_resolver import resolve_target_policies
@@ -17,6 +19,66 @@ from .tools.target_resolver import resolve_target_policies
 logger = configure_logging("sfw-mcp-fmc")
 
 mcp = FastMCP("cisco-secure-firewall-fmc")
+registry: Optional[FMCProfileRegistry] = None
+_client_cache: Dict[str, FMCClient] = {}
+
+
+def create_client(profile_key: Optional[str], *, domain_uuid_override: Optional[str] = None) -> FMCClient:
+    if registry:
+        profile = registry.resolve(profile_key)
+        settings = profile.settings
+        if domain_uuid_override:
+            override = replace(settings, domain_uuid=domain_uuid_override)
+            return FMCClient(override)
+
+        cache_key = profile.profile_id
+        if cache_key not in _client_cache:
+            _client_cache[cache_key] = FMCClient(settings)
+        return _client_cache[cache_key]
+
+    cache_key = "__default__"
+    if domain_uuid_override:
+        settings = FMCSettings.from_env()
+        override = replace(settings, domain_uuid=domain_uuid_override)
+        return FMCClient(override)
+
+    if cache_key not in _client_cache:
+        settings = FMCSettings.from_env()
+        _client_cache[cache_key] = FMCClient(settings)
+    return _client_cache[cache_key]
+
+
+@mcp.tool()
+async def list_fmc_profiles() -> Dict[str, Any]:
+    if not registry:
+        settings = FMCSettings.from_env()
+        return {
+            "mode": "single",
+            "profiles": [
+                {
+                    "id": "default",
+                    "display_name": "Default FMC (env)",
+                    "aliases": [],
+                    "base_url": settings.base_url,
+                    "verify_ssl": settings.verify_ssl,
+                }
+            ],
+        }
+
+    profiles = []
+    for profile in registry.list_profiles():
+        profiles.append(
+            {
+                "id": profile.profile_id,
+                "display_name": profile.display_name,
+                "aliases": profile.aliases,
+                "base_url": profile.settings.base_url,
+                "verify_ssl": profile.settings.verify_ssl,
+                "default": profile.profile_id == registry.default_profile_id,
+            }
+        )
+
+    return {"mode": "multi", "profiles": profiles, "default_profile": registry.default_profile_id}
 
 
 @mcp.tool()
@@ -24,13 +86,10 @@ async def find_rules_by_ip_or_fqdn(
     query: str,
     access_policy_id: str,
     domain_uuid: Optional[str] = None,
+    fmc_profile: Optional[str] = None,
 ) -> str:
     try:
-        settings = FMCSettings.from_env()
-        if domain_uuid:
-            settings.domain_uuid = domain_uuid
-
-        client = FMCClient(settings)
+        client = create_client(fmc_profile, domain_uuid_override=domain_uuid)
         result = await search_rules_in_policy(
             client=client, query=query, access_policy_id=access_policy_id
         )
@@ -50,14 +109,10 @@ async def find_rules_for_target(
     indicator_type: Literal["auto", "ip", "subnet", "fqdn", "sgt", "realm_user", "realm_group"] = "auto",
     rule_set: Literal["access", "prefilter", "both"] = "access",
     domain_uuid: Optional[str] = None,
+    fmc_profile: Optional[str] = None,
 ) -> str:
     try:
-        settings = FMCSettings.from_env()
-        if domain_uuid:
-            settings.domain_uuid = domain_uuid
-
-        # We still instantiate a client to resolve target assignments.
-        client = FMCClient(settings)
+        client = create_client(fmc_profile, domain_uuid_override=domain_uuid)
         await client.ensure_domain_uuid()
 
         resolved, note = await resolve_target_policies(client, target)
@@ -84,6 +139,7 @@ async def find_rules_for_target(
                     max_policies=1,
                     max_results=200,
                     domain_uuid=domain_uuid,
+                    client=client,
                 )
             else:
                 out["access_result"] = {"error": {"category": "RESOLUTION", "message": "No Access Policy assigned to this target."}}
@@ -100,6 +156,7 @@ async def find_rules_for_target(
                     max_policies=1,
                     max_results=200,
                     domain_uuid=domain_uuid,
+                    client=client,
                 )
             else:
                 out["prefilter_result"] = {"error": {"category": "RESOLUTION", "message": "No Prefilter Policy assigned to this target."}}
@@ -131,8 +188,10 @@ async def search_access_rules(
     rule_name_contains: Optional[str] = None,
     max_results: int = 100,
     domain_uuid: Optional[str] = None,
+    fmc_profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     try:
+        client = create_client(fmc_profile, domain_uuid_override=domain_uuid)
         return await search_access_rules_impl(
             indicator=indicator,
             indicator_type=indicator_type,
@@ -148,6 +207,7 @@ async def search_access_rules(
             rule_name_contains=rule_name_contains,
             max_results=max_results,
             domain_uuid=domain_uuid,
+            client=client,
         )
     except Exception as exc:
         logger.exception("Unexpected error in search_access_rules")
@@ -155,6 +215,23 @@ async def search_access_rules(
 
 
 def main() -> None:
+    global registry
+    profiles_dir = os.getenv("FMC_PROFILES_DIR")
+    if profiles_dir:
+        try:
+            registry = FMCProfileRegistry.from_env()
+            logger.info(
+                "Loaded FMC profiles: %s (default=%s)",
+                [p.profile_id for p in registry.list_profiles()],
+                registry.default_profile_id,
+            )
+        except Exception as exc:
+            logger.error("Failed to load FMC profiles (dir=%s): %s", profiles_dir, exc)
+            raise
+    else:
+        registry = None
+        logger.info("FMC_PROFILES_DIR not set; running in single-FMC mode.")
+
     transport = os.getenv("MCP_TRANSPORT", "stdio").lower()
 
     if transport == "http":

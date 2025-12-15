@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Mapping, Optional
 
 from .logging_conf import configure_logging
 
@@ -25,23 +25,29 @@ class FMCSettings:
 
     @classmethod
     def from_env(cls) -> "FMCSettings":
-        base_url = os.getenv("FMC_BASE_URL")
-        username = os.getenv("FMC_USERNAME")
-        password = os.getenv("FMC_PASSWORD")
+        return cls._from_mapping(os.environ)
 
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, str]) -> "FMCSettings":
+        return cls._from_mapping(data)
+
+    @classmethod
+    def _from_mapping(cls, data: Mapping[str, str]) -> "FMCSettings":
+        base_url = data.get("FMC_BASE_URL")
+        username = data.get("FMC_USERNAME")
+        password = data.get("FMC_PASSWORD")
         if not base_url or not username or not password:
             raise ValueError("FMC_BASE_URL, FMC_USERNAME, and FMC_PASSWORD must be set")
 
-        verify_ssl = _to_bool(os.getenv("FMC_VERIFY_SSL", "false"))
-
-        timeout_raw = os.getenv("FMC_TIMEOUT", "30").strip()
+        verify_ssl = _to_bool(data.get("FMC_VERIFY_SSL", "false"))
+        timeout_raw = str(data.get("FMC_TIMEOUT", "30")).strip()
         try:
             timeout = float(timeout_raw)
         except ValueError:
             logger.warning("Invalid FMC_TIMEOUT=%s, falling back to 30", timeout_raw)
             timeout = 30.0
 
-        domain_uuid = os.getenv("FMC_DOMAIN_UUID")
+        domain_uuid = data.get("FMC_DOMAIN_UUID")
 
         return cls(
             base_url=base_url.rstrip("/"),

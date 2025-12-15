@@ -66,6 +66,38 @@ async def main() -> None:
         print("Available tools:")
         pp.pprint(tools)
 
+        selected_profile: Optional[str] = None
+        try:
+            profiles_resp = await client.call_tool("list_fmc_profiles", {})
+            profile_data = unwrap_tool_result(profiles_resp)
+            if isinstance(profile_data, dict):
+                profiles = profile_data.get("profiles") or []
+                mode = profile_data.get("mode", "single")
+                print(f"\nFMC profile mode: {mode}")
+                for item in profiles:
+                    pid = item.get("id")
+                    display = item.get("display_name") or pid
+                    aliases = item.get("aliases") or []
+                    default_marker = ""
+                    if item.get("default") or (
+                        profile_data.get("default_profile") and item.get("id") == profile_data.get("default_profile")
+                    ):
+                        default_marker = " (default)"
+                    print(
+                        f"  - {pid}: {display}{default_marker} | base_url={item.get('base_url')} | aliases={aliases}"
+                    )
+
+                selected_profile = (
+                    input(
+                        "Enter FMC profile id/alias to use "
+                        "(leave blank for server default): "
+                    ).strip()
+                    or None
+                )
+        except Exception as exc:
+            print(f"\n⚠️  Unable to list FMC profiles: {exc}")
+            selected_profile = None
+
         print("\nChoose what to test:")
         print("  1) find_rules_by_ip_or_fqdn (policy ID + query)")
         print("  2) find_rules_for_target (target device + query)")
@@ -81,7 +113,10 @@ async def main() -> None:
                 return
 
             print("\nCalling tool: find_rules_by_ip_or_fqdn\n")
-            raw_resp = await client.call_tool("find_rules_by_ip_or_fqdn", {"query": query, "access_policy_id": policy_id})
+            payload = {"query": query, "access_policy_id": policy_id}
+            if selected_profile:
+                payload["fmc_profile"] = selected_profile
+            raw_resp = await client.call_tool("find_rules_by_ip_or_fqdn", payload)
 
         elif choice == "2":
             query = input("Enter indicator (IP/CIDR/FQDN/SGT/Realm user or group) [default 192.168.20.25]: ").strip() or "192.168.20.25"
@@ -92,10 +127,15 @@ async def main() -> None:
             rule_set = input("Rule set [access/prefilter/both, default access]: ").strip() or "access"
 
             print("\nCalling tool: find_rules_for_target\n")
-            raw_resp = await client.call_tool(
-                "find_rules_for_target",
-                {"query": query, "indicator_type": indicator_type, "target": target, "rule_set": rule_set},
-            )
+            payload = {
+                "query": query,
+                "indicator_type": indicator_type,
+                "target": target,
+                "rule_set": rule_set,
+            }
+            if selected_profile:
+                payload["fmc_profile"] = selected_profile
+            raw_resp = await client.call_tool("find_rules_for_target", payload)
 
         else:
             indicator = input("Enter indicator (IP/CIDR/FQDN/SGT/Realm user or group) [default 192.168.20.25]: ").strip() or "192.168.20.25"
@@ -121,24 +161,24 @@ async def main() -> None:
             max_results = _to_int(input("Max results to return [default 100]: ").strip(), default=100)
 
             print("\nCalling tool: search_access_rules\n")
-            raw_resp = await client.call_tool(
-                "search_access_rules",
-                {
-                    "indicator": indicator,
-                    "indicator_type": indicator_type,
-                    "rule_set": rule_set,
-                    "scope": scope,
-                    "policy_name": policy_name,
-                    "policy_id": policy_id,
-                    "policy_name_contains": policy_name_contains,
-                    "max_policies": max_policies,
-                    "rule_section": rule_section,
-                    "rule_action": rule_action,
-                    "enabled_only": enabled_only,
-                    "rule_name_contains": rule_name_contains,
-                    "max_results": max_results,
-                },
-            )
+            payload = {
+                "indicator": indicator,
+                "indicator_type": indicator_type,
+                "rule_set": rule_set,
+                "scope": scope,
+                "policy_name": policy_name,
+                "policy_id": policy_id,
+                "policy_name_contains": policy_name_contains,
+                "max_policies": max_policies,
+                "rule_section": rule_section,
+                "rule_action": rule_action,
+                "enabled_only": enabled_only,
+                "rule_name_contains": rule_name_contains,
+                "max_results": max_results,
+            }
+            if selected_profile:
+                payload["fmc_profile"] = selected_profile
+            raw_resp = await client.call_tool("search_access_rules", payload)
 
         result = unwrap_tool_result(raw_resp)
         print("\nTool result (unwrapped):")
