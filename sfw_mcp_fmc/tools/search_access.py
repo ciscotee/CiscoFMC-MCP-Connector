@@ -407,4 +407,8 @@ async def search_access_rules_impl(
         },
     }
 
-    return {"meta": meta, "items": matched_items}
+    matched_objects_serialized: List[Dict[str, Any]] = []
+    if matching_objects:
+        matched_objects_serialized = [serialize_network_object(o) for o in matching_objects]
+
+    return {"meta": meta, "items": matched_items, "matched_objects": matched_objects_serialized}
