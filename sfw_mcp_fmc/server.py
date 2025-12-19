@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import replace
+import inspect
 from typing import Any, Dict, Literal, Optional
 
 from fastmcp import FastMCP
@@ -253,13 +254,36 @@ def main() -> None:
     if transport == "http":
         host = os.getenv("MCP_HOST", "0.0.0.0")
         port_raw = os.getenv("MCP_PORT", "8000")
+        auth_token = os.getenv("MCP_AUTH_TOKEN")
+        supports_auth_token = "auth_token" in inspect.signature(mcp.run_http_async).parameters
         try:
             port = int(port_raw)
         except ValueError:
             port = 8000
 
-        logger.info("Starting MCP server (transport=http) on %s:%s", host, port)
-        mcp.run(transport="http", host=host, port=port)
+        run_kwargs = {"transport": "http", "host": host, "port": port}
+        if auth_token:
+            if supports_auth_token:
+                logger.info("Starting MCP server (transport=http) on %s:%s with bearer auth", host, port)
+                run_kwargs["auth_token"] = auth_token
+            else:
+                logger.warning(
+                    "MCP_AUTH_TOKEN is set but this FastMCP version does not support auth_token. "
+                    "Continuing without auth; upgrade fastmcp to enforce bearer auth."
+                )
+                logger.info("Starting MCP server (transport=http) on %s:%s (auth token ignored)", host, port)
+        else:
+            logger.info("Starting MCP server (transport=http) on %s:%s (no auth token set)", host, port)
+
+        try:
+            mcp.run(**run_kwargs)
+        except TypeError as exc:
+            if "auth_token" in str(exc):
+                logger.error(
+                    "MCP_AUTH_TOKEN is set but this FastMCP version does not support auth_token. "
+                    "Upgrade fastmcp to a version that supports HTTP auth or unset MCP_AUTH_TOKEN."
+                )
+            raise
     else:
         logger.info("Starting MCP server (transport=stdio)")
         mcp.run(transport="stdio")

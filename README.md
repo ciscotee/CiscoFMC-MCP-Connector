@@ -66,6 +66,24 @@ python -m sfw_mcp_fmc.server
 
 Configure transport via `.env` (default is HTTP on `http://0.0.0.0:8000/mcp`). Logs show which FMC profiles loaded.
 
+#### Optional: HTTP bearer auth
+
+If you expose the HTTP transport, set a token and require callers to send it:
+
+1. Generate a base64-safe token:
+   ```bash
+   python - <<'PY'
+   import secrets
+   print(secrets.token_urlsafe(32))
+   PY
+   ```
+2. Add it to your `.env`:
+   ```
+   MCP_AUTH_TOKEN=<paste-token-here>
+   ```
+3. Clients must send `Authorization: Bearer <token>` with each request.
+4. Ensure your installed `fastmcp` supports `auth_token` for HTTP; if your version does not, the server will ignore `MCP_AUTH_TOKEN` and run without auth (upgrade FastMCP to enforce it).
+
 ## 3. Manual testing
 
 `client/test_client.py` is an interactive harness that:
