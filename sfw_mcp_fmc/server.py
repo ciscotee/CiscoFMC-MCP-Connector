@@ -12,7 +12,7 @@ from .config import FMCSettings
 from .errors import InvalidIndicatorError
 from .fmc.client import FMCClient
 from .logging_conf import configure_logging
-from .profile_registry import FMCProfileRegistry
+from .profile_registry import FMCProfile, FMCProfileRegistry
 from .tools.find_rules import search_rules_in_policy
 from .tools.search_access import search_access_rules_impl
 from .tools.target_resolver import resolve_target_policies
@@ -34,6 +34,22 @@ SERVER_INSTRUCTIONS = (
 mcp = FastMCP("cisco-secure-firewall-fmc", instructions=SERVER_INSTRUCTIONS)
 registry: Optional[FMCProfileRegistry] = None
 _client_cache: Dict[str, FMCClient] = {}
+
+
+def _apply_profile_logging(profile: FMCProfile) -> None:
+    updates: Dict[str, str] = {}
+    if profile.log_level:
+        updates["LOG_LEVEL"] = profile.log_level
+    if profile.httpx_log_level:
+        updates["HTTPX_LOG_LEVEL"] = profile.httpx_log_level
+    if profile.httpx_trace:
+        updates["HTTPX_TRACE"] = profile.httpx_trace
+
+    if updates:
+        os.environ.update(updates)
+        global logger
+        logger = configure_logging("sfw-mcp-fmc")
+        logger.info("Applied logging settings from profile %s", profile.profile_id)
 
 
 def create_client(profile_key: Optional[str], *, domain_uuid_override: Optional[str] = None) -> FMCClient:
@@ -237,6 +253,7 @@ def main() -> None:
     if profiles_dir:
         try:
             registry = FMCProfileRegistry.from_env()
+            _apply_profile_logging(registry.resolve(None))
             logger.info(
                 "Loaded FMC profiles: %s (default=%s)",
                 [p.profile_id for p in registry.list_profiles()],

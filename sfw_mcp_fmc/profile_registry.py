@@ -17,6 +17,9 @@ class FMCProfile:
     display_name: str
     aliases: List[str]
     settings: FMCSettings
+    log_level: Optional[str] = None
+    httpx_log_level: Optional[str] = None
+    httpx_trace: Optional[str] = None
 
 
 class FMCProfileRegistry:
@@ -88,6 +91,9 @@ class FMCProfileRegistry:
             profile_id = data.get("FMC_PROFILE_ID") or env_file.stem
             display_name = data.get("FMC_PROFILE_DISPLAY_NAME") or profile_id.replace("-", " ").title()
             aliases = _parse_aliases(data.get("FMC_PROFILE_ALIASES"))
+            log_level = _clean_env_value(data.get("LOG_LEVEL"))
+            httpx_log_level = _clean_env_value(data.get("HTTPX_LOG_LEVEL"))
+            httpx_trace = _clean_env_value(data.get("HTTPX_TRACE"))
 
             profiles.append(
                 FMCProfile(
@@ -95,6 +101,9 @@ class FMCProfileRegistry:
                     display_name=display_name,
                     aliases=aliases,
                     settings=settings,
+                    log_level=log_level,
+                    httpx_log_level=httpx_log_level,
+                    httpx_trace=httpx_trace,
                 )
             )
 
@@ -121,3 +130,10 @@ def _parse_aliases(raw: Optional[str]) -> List[str]:
     if not raw:
         return []
     return [alias.strip() for alias in raw.split(",") if alias.strip()]
+
+
+def _clean_env_value(raw: Optional[str]) -> Optional[str]:
+    if raw is None:
+        return None
+    value = raw.strip()
+    return value or None

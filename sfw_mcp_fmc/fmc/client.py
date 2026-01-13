@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Dict, List, Optional, Set
 from urllib.parse import parse_qs, urlsplit
 
@@ -27,6 +28,35 @@ class FMCClient:
         self._access_token: Optional[str] = None
         self._domain_uuid: Optional[str] = settings.domain_uuid
 
+    @staticmethod
+    def _httpx_trace_enabled() -> bool:
+        raw = os.getenv("HTTPX_TRACE", "").strip().lower()
+        return raw in {"1", "true", "yes", "y", "on"}
+
+    async def _trace_request(self, request: httpx.Request) -> None:
+        logger.debug("HTTPX request: %s %s", request.method, request.url)
+
+    async def _trace_response(self, response: httpx.Response) -> None:
+        logger.debug(
+            "HTTPX response: %s %s -> %s",
+            response.request.method,
+            response.request.url,
+            response.status_code,
+        )
+
+    def _build_httpx_client(self) -> httpx.AsyncClient:
+        event_hooks = None
+        if self._httpx_trace_enabled():
+            event_hooks = {
+                "request": [self._trace_request],
+                "response": [self._trace_response],
+            }
+        return httpx.AsyncClient(
+            verify=self._settings.verify_ssl,
+            timeout=self._settings.timeout,
+            event_hooks=event_hooks,
+        )
+
     @property
     def settings(self) -> FMCSettings:
         return self._settings
@@ -36,9 +66,7 @@ class FMCClient:
         logger.debug("Authenticating to FMC at %s", url)
 
         try:
-            async with httpx.AsyncClient(
-                verify=self._settings.verify_ssl, timeout=self._settings.timeout
-            ) as client:
+            async with self._build_httpx_client() as client:
                 response = await client.post(
                     url,
                     auth=(self._settings.username, self._settings.password),
@@ -70,9 +98,7 @@ class FMCClient:
         url = f"{self._settings.base_url}/api/fmc_platform/v1/info/domain"
 
         try:
-            async with httpx.AsyncClient(
-                verify=self._settings.verify_ssl, timeout=self._settings.timeout
-            ) as client:
+            async with self._build_httpx_client() as client:
                 response = await client.get(
                     url,
                     headers={
@@ -167,9 +193,7 @@ class FMCClient:
 
         method_u = method.upper()
 
-        async with httpx.AsyncClient(
-            verify=self._settings.verify_ssl, timeout=self._settings.timeout
-        ) as client:
+        async with self._build_httpx_client() as client:
             logger.info("FMC request: %s %s (params=%s)", method_u, url, params)
             resp = await client.request(
                 method_u, url, headers=headers, params=params, json=json_body

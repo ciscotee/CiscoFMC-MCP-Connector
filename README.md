@@ -44,6 +44,20 @@ FMC_PROFILE_DEFAULT=fmc-north-south
 
 When `FMC_PROFILES_DIR` is set, the server auto-loads every `*.env` file in that folder and exposes them via `list_fmc_profiles`. If it’s unset, the single-FMC env variables are used.
 
+### Logging and HTTP tracing
+
+Logging levels can be set in the active profile file (profile mode) or in the root `.env` (single-FMC mode or Docker env). The default profile’s logging values are applied at startup.
+
+```
+LOG_LEVEL=DEBUG           # overall app logging
+HTTPX_TRACE=1             # log FMC request URLs and status codes
+HTTPX_LOG_LEVEL=WARNING   # httpx/httpcore verbosity (default WARNING)
+```
+
+Notes:
+- In profile mode, put these in the default profile file (the one named by `FMC_PROFILE_DEFAULT`).
+- In Docker, the root `.env` (or `docker-compose.yml` environment) must still provide server-level settings like `FMC_PROFILES_DIR`, `FMC_PROFILE_DEFAULT`, `MCP_HOST`, and `MCP_PORT`.
+
 ## 2. Run the MCP server
 
 ### Docker
